@@ -14,6 +14,8 @@ import v8 from 'node:v8';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { start_sandbox } from './utils/sandbox.js';
+import yargs from 'yargs/yargs';
+import { hideBin } from 'yargs/helpers';
 import {
   LoadedSettings,
   loadSettings,
@@ -83,8 +85,30 @@ async function relaunchWithAdditionalArgs(additionalArgs: string[]) {
 }
 
 export async function main() {
+  console.log('[DEBUG] MAIN FUNCTION - Starting main function');
   const workspaceRoot = process.cwd();
+  console.log('[DEBUG] MAIN FUNCTION - Workspace root:', workspaceRoot);
   const settings = loadSettings(workspaceRoot);
+  console.log('[DEBUG] MAIN FUNCTION - Settings loaded, selectedAuthType:', settings.merged.selectedAuthType);
+
+  // Auto-configure selectedAuthType based on provider and available API keys
+  // This must happen BEFORE any React components initialize
+  const argv = yargs(hideBin(process.argv)).parseSync();
+  const provider = argv.provider || settings.merged.provider || process.env.AI_PROVIDER || 'gemini';
+  
+  console.log('[DEBUG] Early auth config - Provider:', provider);
+  console.log('[DEBUG] Early auth config - Claude API Key present:', !!process.env.CLAUDE_API_KEY);
+  console.log('[DEBUG] Early auth config - Current selectedAuthType:', settings.merged.selectedAuthType);
+  
+  if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
+    console.log('[DEBUG] Setting selectedAuthType to USE_CLAUDE early');
+    settings.setValue(SettingScope.User, 'selectedAuthType', AuthType.USE_CLAUDE);
+  } else if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
+    console.log('[DEBUG] Setting selectedAuthType to USE_GEMINI early');
+    settings.setValue(SettingScope.User, 'selectedAuthType', AuthType.USE_GEMINI);
+  }
+  
+  console.log('[DEBUG] Final early selectedAuthType:', settings.merged.selectedAuthType);
 
   await cleanupCheckpoints();
   if (settings.errors.length > 0) {
@@ -102,14 +126,25 @@ export async function main() {
   const extensions = loadExtensions(workspaceRoot);
   const config = await loadCliConfig(settings.merged, extensions, sessionId);
 
-  // set default fallback to gemini api key
+  // set default fallback to appropriate API key based on provider
   // this has to go after load cli because that's where the env is set
-  if (!settings.merged.selectedAuthType && process.env.GEMINI_API_KEY) {
-    settings.setValue(
-      SettingScope.User,
-      'selectedAuthType',
-      AuthType.USE_GEMINI,
-    );
+  if (!settings.merged.selectedAuthType) {
+    const provider = config.getProvider();
+    if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
+      settings.setValue(
+        SettingScope.User,
+        'selectedAuthType',
+        AuthType.USE_CLAUDE,
+      );
+      // Force refresh auth with Claude
+      await config.refreshAuth(AuthType.USE_CLAUDE);
+    } else if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
+      settings.setValue(
+        SettingScope.User,
+        'selectedAuthType',
+        AuthType.USE_GEMINI,
+      );
+    }
   }
 
   setMaxSizedBoxDebugging(config.getDebugMode());

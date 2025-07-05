@@ -5,6 +5,7 @@
  */
 
 import { useState, useCallback, useEffect } from 'react';
+import process from 'node:process';
 import { LoadedSettings, SettingScope } from '../../config/settings.js';
 import {
   AuthType,
@@ -13,14 +14,58 @@ import {
   getErrorMessage,
 } from '@google/gemini-cli-core';
 
+// Helper function to check if auth should be auto-configured
+const shouldAutoConfigureAuth = (settings: LoadedSettings): boolean => {
+  // If selectedAuthType is already set, don't auto-configure
+  if (settings.merged.selectedAuthType) {
+    return false;
+  }
+
+  // Check if we have the necessary environment variables for auto-configuration
+  const provider = settings.merged.provider || process.env.AI_PROVIDER || 'gemini';
+  
+  if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
+    return true;
+  }
+  
+  if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
+    return true;
+  }
+  
+  return false;
+};
+
+// Helper function to check if we should show auth dialog
+const shouldShowAuthDialog = (settings: LoadedSettings): boolean => {
+  // If selectedAuthType is defined, no need for dialog
+  if (settings.merged.selectedAuthType) {
+    return false;
+  }
+
+  // If we can auto-configure, no need for dialog
+  if (shouldAutoConfigureAuth(settings)) {
+    return false;
+  }
+
+  // Otherwise, show the dialog
+  return true;
+};
+
 export const useAuthCommand = (
   settings: LoadedSettings,
   setAuthError: (error: string | null) => void,
   config: Config,
 ) => {
+  // Use the helper function to determine if dialog should be shown
   const [isAuthDialogOpen, setIsAuthDialogOpen] = useState(
-    settings.merged.selectedAuthType === undefined,
+    shouldShowAuthDialog(settings),
   );
+
+  // Watch for changes in settings and update dialog state accordingly
+  useEffect(() => {
+    const shouldShow = shouldShowAuthDialog(settings);
+    setIsAuthDialogOpen(shouldShow);
+  }, [settings.merged.selectedAuthType, settings.merged.provider]);
 
   const openAuthDialog = useCallback(() => {
     setIsAuthDialogOpen(true);

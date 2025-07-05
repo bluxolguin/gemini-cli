@@ -38,6 +38,7 @@ export enum AuthType {
   LOGIN_WITH_GOOGLE = 'oauth-personal',
   USE_GEMINI = 'gemini-api-key',
   USE_VERTEX_AI = 'vertex-ai',
+  USE_CLAUDE = 'claude-api-key',
 }
 
 export type ContentGeneratorConfig = {
@@ -45,6 +46,7 @@ export type ContentGeneratorConfig = {
   apiKey?: string;
   vertexai?: boolean;
   authType?: AuthType | undefined;
+  provider?: 'gemini' | 'claude';
 };
 
 export async function createContentGeneratorConfig(
@@ -53,6 +55,7 @@ export async function createContentGeneratorConfig(
   config?: { getModel?: () => string },
 ): Promise<ContentGeneratorConfig> {
   const geminiApiKey = process.env.GEMINI_API_KEY;
+  const claudeApiKey = process.env.CLAUDE_API_KEY;
   const googleApiKey = process.env.GOOGLE_API_KEY;
   const googleCloudProject = process.env.GOOGLE_CLOUD_PROJECT;
   const googleCloudLocation = process.env.GOOGLE_CLOUD_LOCATION;
@@ -63,10 +66,17 @@ export async function createContentGeneratorConfig(
   const contentGeneratorConfig: ContentGeneratorConfig = {
     model: effectiveModel,
     authType,
+    provider: authType === AuthType.USE_CLAUDE ? 'claude' : 'gemini',
   };
 
   // if we are using google auth nothing else to validate for now
   if (authType === AuthType.LOGIN_WITH_GOOGLE) {
+    return contentGeneratorConfig;
+  }
+
+  if (authType === AuthType.USE_CLAUDE && claudeApiKey) {
+    contentGeneratorConfig.apiKey = claudeApiKey;
+    contentGeneratorConfig.model = effectiveModel; // Claude models will be mapped in ClaudeContentGenerator
     return contentGeneratorConfig;
   }
 
@@ -109,12 +119,18 @@ export async function createContentGenerator(
       'User-Agent': `GeminiCLI/${version} (${process.platform}; ${process.arch})`,
     },
   };
+  
   if (config.authType === AuthType.LOGIN_WITH_GOOGLE) {
     return createCodeAssistContentGenerator(
       httpOptions,
       config.authType,
       sessionId,
     );
+  }
+
+  if (config.authType === AuthType.USE_CLAUDE) {
+    const { ClaudeContentGenerator } = await import('../claude/claudeClient.js');
+    return new ClaudeContentGenerator(config.apiKey!, httpOptions);
   }
 
   if (

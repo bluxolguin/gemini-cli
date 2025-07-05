@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import process from 'node:process';
 import { AuthType } from '@google/gemini-cli-core';
 import { loadEnvironment } from './config.js';
 
@@ -31,6 +32,13 @@ export const validateAuthMethod = (authMethod: string): string | null => {
         '• GOOGLE_API_KEY environment variable (if using express mode).\n' +
         'Update your .env and try again, no reload needed!'
       );
+    }
+    return null;
+  }
+
+  if (authMethod === AuthType.USE_CLAUDE) {
+    if (!process.env.CLAUDE_API_KEY) {
+      return 'CLAUDE_API_KEY environment variable not found. Add that to your .env and try again, no reload needed!';
     }
     return null;
   }

@@ -129,6 +129,8 @@ export interface ConfigParameters {
   fileDiscoveryService?: FileDiscoveryService;
   bugCommand?: BugCommandSettings;
   model: string;
+  provider?: 'gemini' | 'claude';
+  authType?: string;
   extensionContextFilePaths?: string[];
 }
 
@@ -167,6 +169,8 @@ export class Config {
   private readonly cwd: string;
   private readonly bugCommand: BugCommandSettings | undefined;
   private readonly model: string;
+  private readonly provider: 'gemini' | 'claude';
+  private readonly authType: string | undefined;
   private readonly extensionContextFilePaths: string[];
   private modelSwitchedDuringSession: boolean = false;
   flashFallbackHandler?: FlashFallbackHandler;
@@ -210,6 +214,8 @@ export class Config {
     this.fileDiscoveryService = params.fileDiscoveryService ?? null;
     this.bugCommand = params.bugCommand;
     this.model = params.model;
+    this.provider = params.provider ?? 'gemini';
+    this.authType = params.authType;
     this.extensionContextFilePaths = params.extensionContextFilePaths ?? [];
 
     if (params.contextFileName) {
@@ -226,6 +232,22 @@ export class Config {
       );
     } else {
       console.log('Data collection is disabled.');
+    }
+  }
+
+  async initializeContentGenerator() {
+    if (!this.contentGeneratorConfig) {
+      const authType = this.getAuthTypeForProvider();
+      console.log('[DEBUG] Config: Initializing content generator with authType:', authType, 'provider:', this.provider);
+      if (authType) {
+        const contentConfig = await createContentGeneratorConfig(
+          this.model,
+          authType,
+          { getModel: () => this.getModel() },
+        );
+        console.log('[DEBUG] Config: Created content config:', JSON.stringify(contentConfig, null, 2));
+        this.contentGeneratorConfig = contentConfig;
+      }
     }
   }
 
@@ -257,16 +279,63 @@ export class Config {
     // Note: In the future, we may want to reset any cached state when switching auth methods
   }
 
+  getAuthTypeForProvider(): AuthType | undefined {
+    // Use explicitly configured authType if available
+    if (this.authType) {
+      if (this.authType === 'claude-api-key') {
+        return AuthType.USE_CLAUDE;
+      } else if (this.authType === 'gemini-api-key') {
+        return AuthType.USE_GEMINI;
+      } else if (this.authType === 'vertex-ai') {
+        return AuthType.USE_VERTEX_AI;
+      } else if (this.authType === 'oauth-personal') {
+        return AuthType.LOGIN_WITH_GOOGLE;
+      }
+    }
+    
+    // Direct check for provider-specific API keys
+    if (this.provider === 'claude' && process.env.CLAUDE_API_KEY) {
+      return AuthType.USE_CLAUDE;
+    } else if (this.provider === 'gemini' && process.env.GEMINI_API_KEY) {
+      return AuthType.USE_GEMINI;
+    }
+    
+    // Fallback to provider-based logic
+    if (this.provider === 'claude') {
+      return AuthType.USE_CLAUDE;
+    } else if (this.provider === 'gemini') {
+      return AuthType.USE_GEMINI;
+    }
+    return undefined;
+  }
+
   getSessionId(): string {
     return this.sessionId;
   }
 
   getContentGeneratorConfig(): ContentGeneratorConfig {
+    if (!this.contentGeneratorConfig) {
+      // If not initialized, try to initialize synchronously
+      // This is a fallback for edge cases
+      const authType = this.getAuthTypeForProvider();
+      if (authType) {
+        // Return a minimal config for now - the async initialization should handle this
+        return {
+          model: this.model,
+          authType,
+          provider: this.provider,
+        };
+      }
+    }
     return this.contentGeneratorConfig;
   }
 
   getModel(): string {
     return this.contentGeneratorConfig?.model || this.model;
+  }
+
+  getProvider(): 'gemini' | 'claude' {
+    return this.provider;
   }
 
   setModel(newModel: string): void {

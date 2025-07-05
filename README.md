@@ -38,6 +38,8 @@ With the Gemini CLI you can:
 
 You are now ready to use the Gemini CLI!
 
+**Note**: If you prefer to use Claude instead of Gemini, see the [Claude Integration Guide](./docs/claude.md) for setup instructions.
+
 ### Use a Gemini API key:
 
 The Gemini API provides a free tier with [100 requests per day](https://ai.google.dev/gemini-api/docs/rate-limits#free-tier) using Gemini 2.5 Pro, control over which model you use, and access to higher rate limits (with a paid plan):

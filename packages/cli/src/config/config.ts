@@ -18,6 +18,7 @@ import {
   DEFAULT_GEMINI_EMBEDDING_MODEL,
   FileDiscoveryService,
   TelemetryTarget,
+  AuthType,
 } from '@google/gemini-cli-core';
 import { Settings } from './settings.js';
 
@@ -41,6 +42,7 @@ const logger = {
 
 interface CliArgs {
   model: string | undefined;
+  provider: 'gemini' | 'claude' | undefined;
   sandbox: boolean | string | undefined;
   'sandbox-image': string | undefined;
   debug: boolean | undefined;
@@ -62,6 +64,13 @@ async function parseArguments(): Promise<CliArgs> {
       type: 'string',
       description: `Model`,
       default: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
+    })
+    .option('provider', {
+      alias: 'pr',
+      type: 'string',
+      choices: ['gemini', 'claude'] as const,
+      description: 'AI provider to use (gemini or claude)',
+      default: (process.env.AI_PROVIDER as 'gemini' | 'claude') || 'gemini',
     })
     .option('prompt', {
       alias: 'p',
@@ -171,6 +180,26 @@ export async function loadCliConfig(
   const argv = await parseArguments();
   const debugMode = argv.debug || false;
 
+  // Auto-configure selectedAuthType based on provider and available API keys
+  if (!settings.selectedAuthType) {
+    const provider = argv.provider || settings.provider || process.env.AI_PROVIDER || 'gemini';
+    console.log('[DEBUG] Provider detected:', provider);
+    console.log('[DEBUG] Claude API Key present:', !!process.env.CLAUDE_API_KEY);
+    console.log('[DEBUG] Gemini API Key present:', !!process.env.GEMINI_API_KEY);
+    
+    if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
+      console.log('[DEBUG] Setting selectedAuthType to USE_CLAUDE');
+      settings.selectedAuthType = AuthType.USE_CLAUDE;
+    } else if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
+      console.log('[DEBUG] Setting selectedAuthType to USE_GEMINI');
+      settings.selectedAuthType = AuthType.USE_GEMINI;
+    }
+    
+    console.log('[DEBUG] Final selectedAuthType:', settings.selectedAuthType);
+  } else {
+    console.log('[DEBUG] selectedAuthType already set:', settings.selectedAuthType);
+  }
+
   // Set the context filename in the server's memoryTool module BEFORE loading memory
   // TODO(b/343434939): This is a bit of a hack. The contextFileName should ideally be passed
   // directly to the Config constructor in core, and have core handle setGeminiMdFilename.
@@ -198,7 +227,13 @@ export async function loadCliConfig(
 
   const sandboxConfig = await loadSandboxConfig(settings, argv);
 
-  return new Config({
+  // Determine provider and corresponding authType
+  const provider = argv.provider || settings.provider || 'gemini';
+  const authType = provider === 'claude' ? 'claude-api-key' : 
+                   provider === 'gemini' ? 'gemini-api-key' : 
+                   'oauth-personal'; // default to oauth for unknown providers
+
+  const config = new Config({
     sessionId,
     embeddingModel: DEFAULT_GEMINI_EMBEDDING_MODEL,
     sandbox: sandboxConfig,
@@ -245,8 +280,15 @@ export async function loadCliConfig(
     fileDiscoveryService: fileService,
     bugCommand: settings.bugCommand,
     model: argv.model!,
+    provider: provider,
+    authType: authType,
     extensionContextFilePaths,
   });
+
+  // Initialize the content generator after creating config
+  await config.initializeContentGenerator();
+  
+  return config;
 }
 
 function mergeMcpServers(settings: Settings, extensions: Extension[]) {
