@@ -23,7 +23,8 @@ import {
 import { Config } from '../config/config.js';
 import { getCoreSystemPrompt, getCompressionPrompt } from './prompts.js';
 import { ReadManyFilesTool } from '../tools/read-many-files.js';
-import { getResponseText }mport { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
+import { getResponseText } from '../utils/generateContentResponseUtilities.js';
+import { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
 import { reportError } from '../utils/errorReporting.js';
 import { GeminiChat } from './geminiChat.js';
 import { retryWithBackoff } from '../utils/retry.js';
@@ -428,29 +429,25 @@ export class GeminiClient {
               if (tool) {
                 const result = await tool.execute(toolCall.args, signal);
 
-                // Add tool result part
+                // Add tool result part using the correct format
+                const responseText = typeof result.llmContent === 'string'
+                  ? result.llmContent
+                  : Array.isArray(result.llmContent) && result.llmContent.length > 0
+                    ? result.llmContent
+                        .map((p) =>
+                          typeof p === 'string'
+                            ? p
+                            : (p as { text: string }).text ||
+                              JSON.stringify(p),
+                        )
+                        .join('\n')
+                    : 'Tool executed successfully';
+
                 toolResponseParts.push({
                   functionResponse: {
+                    id: toolCall.id,
                     name: toolCall.name,
-                    response:
-                      typeof result.llmContent === 'string'
-                        ? { result: result.llmContent }
-                        : Array.isArray(result.llmContent) &&
-                            result.llmContent.length > 0
-                          ? {
-                              result: result.llmContent
-                                .map((p) =>
-                                  typeof p === 'string'
-                                    ? p
-                                    : (p as { text: string }).text ||
-                                      JSON.stringify(p),
-                                )
-                                .join('\n'),
-                            }
-                          : { result: 'Tool executed successfully' },
-                    toolUseId: toolCall.id,
-                  } as unknown as {
-                    toolUseId: string;
+                    response: { output: responseText },
                   },
                 });
 
@@ -469,6 +466,7 @@ export class GeminiClient {
             } catch (toolError) {
               toolResponseParts.push({
                 functionResponse: {
+                  id: toolCall.id,
                   name: toolCall.name,
                   response: {
                     error:
@@ -476,9 +474,6 @@ export class GeminiClient {
                         ? toolError.message
                         : String(toolError),
                   },
-                  toolUseId: toolCall.id,
-                } as unknown as {
-                  toolUseId: string;
                 },
               });
 

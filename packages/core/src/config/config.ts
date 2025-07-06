@@ -6,6 +6,7 @@
 
 import * as path from 'node:path';
 import process from 'node:process';
+import { Content } from '@google/genai';
 import {
   AuthType,
   ContentGeneratorConfig,
@@ -28,6 +29,7 @@ import {
 } from '../tools/memoryTool.js';
 import { WebSearchTool } from '../tools/web-search.js';
 import { GeminiClient } from '../core/client.js';
+import { ClaudeContentGenerator } from '../claude/claudeClient.js';
 import { FileDiscoveryService } from '../services/fileDiscoveryService.js';
 import { GitService } from '../services/gitService.js';
 import { getProjectTempDir } from '../utils/paths.js';
@@ -97,6 +99,38 @@ export type FlashFallbackHandler = (
   fallbackModel: string,
 ) => Promise<boolean>;
 
+/**
+ * Independent Claude client handler that doesn't rely on GeminiClient
+ */
+export class ClaudeClientHandler {
+  private contentGenerator: ClaudeContentGenerator;
+  private history: Content[] = [];
+
+  constructor(apiKey: string, httpOptions?: { headers?: Record<string, string> }) {
+    this.contentGenerator = new ClaudeContentGenerator(apiKey, httpOptions);
+  }
+
+  getContentGenerator(): ClaudeContentGenerator {
+    return this.contentGenerator;
+  }
+
+  getHistory(): Content[] {
+    return [...this.history]; // Return a copy to prevent external mutation
+  }
+
+  addToHistory(content: Content): void {
+    this.history.push(content);
+  }
+
+  clearHistory(): void {
+    this.history = [];
+  }
+
+  setHistory(history: Content[]): void {
+    this.history = [...history]; // Create a copy
+  }
+}
+
 export interface ConfigParameters {
   sessionId: string;
   embeddingModel?: string;
@@ -158,6 +192,7 @@ export class Config {
   private readonly telemetrySettings: TelemetrySettings;
   private readonly usageStatisticsEnabled: boolean;
   private geminiClient!: GeminiClient;
+  private claudeClientHandler?: ClaudeClientHandler;
   private readonly fileFiltering: {
     respectGitIgnore: boolean;
     enableRecursiveFileSearch: boolean;
@@ -244,6 +279,21 @@ export class Config {
         'provider:',
         this.provider,
       );
+      
+      // Handle Claude independently
+      if (this.provider === 'claude' && authType === AuthType.USE_CLAUDE) {
+        await this.initializeClaudeClient();
+        // Still create a minimal config for compatibility
+        this.contentGeneratorConfig = {
+          model: this.model,
+          authType,
+          provider: this.provider,
+          apiKey: process.env.CLAUDE_API_KEY,
+        };
+        return;
+      }
+      
+      // Handle Gemini as before
       if (authType) {
         const contentConfig = await createContentGeneratorConfig(
           this.model,
@@ -259,7 +309,33 @@ export class Config {
     }
   }
 
+  private async initializeClaudeClient() {
+    const apiKey = process.env.CLAUDE_API_KEY;
+    if (!apiKey) {
+      throw new Error('CLAUDE_API_KEY environment variable is required for Claude provider');
+    }
+    
+    console.log('[DEBUG] Config: Initializing independent Claude client');
+    this.claudeClientHandler = new ClaudeClientHandler(apiKey);
+  }
+
   async refreshAuth(authMethod: AuthType) {
+    // Handle Claude independently
+    if (authMethod === AuthType.USE_CLAUDE) {
+      console.log('[DEBUG] Config: Refreshing Claude authentication');
+      await this.initializeClaudeClient();
+      this.contentGeneratorConfig = {
+        model: this.model,
+        authType: authMethod,
+        provider: 'claude',
+        apiKey: process.env.CLAUDE_API_KEY,
+      };
+      this.toolRegistry = await createToolRegistry(this);
+      this.modelSwitchedDuringSession = false;
+      return;
+    }
+
+    // Handle Gemini as before
     // Always use the original default model when switching auth methods
     // This ensures users don't stay on Flash after switching between auth types
     // and allows API key users to get proper fallback behavior from getEffectiveModel
@@ -468,6 +544,14 @@ export class Config {
 
   getGeminiClient(): GeminiClient {
     return this.geminiClient;
+  }
+
+  getClaudeClientHandler(): ClaudeClientHandler | undefined {
+    return this.claudeClientHandler;
+  }
+
+  getContentGenerator(): ClaudeContentGenerator | undefined {
+    return this.claudeClientHandler?.getContentGenerator();
   }
 
   getGeminiDir(): string {
