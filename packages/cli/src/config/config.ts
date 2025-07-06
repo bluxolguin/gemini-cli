@@ -182,11 +182,18 @@ export async function loadCliConfig(
 
   // Auto-configure selectedAuthType based on provider and available API keys
   if (!settings.selectedAuthType) {
-    const provider = argv.provider || settings.provider || process.env.AI_PROVIDER || 'gemini';
+    const provider =
+      argv.provider || settings.provider || process.env.AI_PROVIDER || 'gemini';
     console.log('[DEBUG] Provider detected:', provider);
-    console.log('[DEBUG] Claude API Key present:', !!process.env.CLAUDE_API_KEY);
-    console.log('[DEBUG] Gemini API Key present:', !!process.env.GEMINI_API_KEY);
-    
+    console.log(
+      '[DEBUG] Claude API Key present:',
+      !!process.env.CLAUDE_API_KEY,
+    );
+    console.log(
+      '[DEBUG] Gemini API Key present:',
+      !!process.env.GEMINI_API_KEY,
+    );
+
     if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
       console.log('[DEBUG] Setting selectedAuthType to USE_CLAUDE');
       settings.selectedAuthType = AuthType.USE_CLAUDE;
@@ -194,10 +201,13 @@ export async function loadCliConfig(
       console.log('[DEBUG] Setting selectedAuthType to USE_GEMINI');
       settings.selectedAuthType = AuthType.USE_GEMINI;
     }
-    
+
     console.log('[DEBUG] Final selectedAuthType:', settings.selectedAuthType);
   } else {
-    console.log('[DEBUG] selectedAuthType already set:', settings.selectedAuthType);
+    console.log(
+      '[DEBUG] selectedAuthType already set:',
+      settings.selectedAuthType,
+    );
   }
 
   // Set the context filename in the server's memoryTool module BEFORE loading memory
@@ -227,11 +237,55 @@ export async function loadCliConfig(
 
   const sandboxConfig = await loadSandboxConfig(settings, argv);
 
-  // Determine provider and corresponding authType
-  const provider = argv.provider || settings.provider || 'gemini';
-  const authType = provider === 'claude' ? 'claude-api-key' : 
-                   provider === 'gemini' ? 'gemini-api-key' : 
-                   'oauth-personal'; // default to oauth for unknown providers
+  // Determine provider and corresponding authType with proper API key validation
+  let provider = argv.provider || settings.provider || 'gemini';
+  let authType = settings.selectedAuthType; // Start with existing auth type setting
+
+  const isExplicitProviderOverride = !!argv.provider;
+
+  // Override authType if:
+  // 1. No existing authType, OR
+  // 2. User explicitly specified a provider via CLI
+  if (!authType || isExplicitProviderOverride) {
+    console.log(
+      '[DEBUG] ' +
+        (isExplicitProviderOverride
+          ? 'Explicit provider override'
+          : 'No existing authType') +
+        ', determining authType for provider:',
+      provider,
+    );
+
+    // Validate provider selection against available API keys
+    if (provider === 'claude') {
+      if (!process.env.CLAUDE_API_KEY) {
+        if (isExplicitProviderOverride) {
+          throw new Error(
+            'You explicitly requested --provider claude but no CLAUDE_API_KEY environment variable is set. Please set CLAUDE_API_KEY=your_api_key_here',
+          );
+        } else {
+          console.warn(
+            '[WARN] Claude provider requested but CLAUDE_API_KEY not found. Falling back to Gemini.',
+          );
+          provider = 'gemini';
+        }
+      } else {
+        authType = AuthType.USE_CLAUDE;
+      }
+    }
+
+    // For Gemini or fallback cases
+    if (provider === 'gemini') {
+      if (process.env.GEMINI_API_KEY) {
+        authType = AuthType.USE_GEMINI;
+      } else {
+        // No Gemini API key, fall back to OAuth
+        authType = AuthType.LOGIN_WITH_GOOGLE;
+      }
+    }
+  } else {
+    console.log('[DEBUG] Using existing authType from settings:', authType);
+  }
 
   const config = new Config({
     sessionId,
@@ -280,14 +334,14 @@ export async function loadCliConfig(
     fileDiscoveryService: fileService,
     bugCommand: settings.bugCommand,
     model: argv.model!,
-    provider: provider,
-    authType: authType,
+    provider,
+    authType,
     extensionContextFilePaths,
   });
 
   // Initialize the content generator after creating config
   await config.initializeContentGenerator();
-  
+
   return config;
 }
 

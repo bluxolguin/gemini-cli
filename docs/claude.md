@@ -16,6 +16,7 @@ This document describes how to use Claude as an AI provider with the Gemini CLI.
 You can use Claude in several ways:
 
 #### Option 1: Environment Variable
+
 Set the `CLAUDE_API_KEY` environment variable:
 
 ```bash
@@ -23,6 +24,7 @@ export CLAUDE_API_KEY="your-claude-api-key-here"
 ```
 
 #### Option 2: Command Line Flag
+
 Use the `--provider` flag when running the CLI:
 
 ```bash
@@ -30,6 +32,7 @@ gemini --provider claude
 ```
 
 #### Option 3: Settings File
+
 Add the provider setting to your `.gemini/settings.json` file:
 
 ```json
@@ -47,12 +50,12 @@ Add the provider setting to your `.gemini/settings.json` file:
 
 The CLI automatically maps Gemini model names to equivalent Claude models:
 
-| Gemini Model | Claude Model |
-|--------------|--------------|
-| `gemini-2.5-pro` | `claude-3-opus-20240229` |
+| Gemini Model       | Claude Model               |
+| ------------------ | -------------------------- |
+| `gemini-2.5-pro`   | `claude-3-opus-20240229`   |
 | `gemini-2.5-flash` | `claude-3-sonnet-20240229` |
-| `gemini-pro` | `claude-3-sonnet-20240229` |
-| `gemini-flash` | `claude-3-haiku-20240307` |
+| `gemini-pro`       | `claude-3-sonnet-20240229` |
+| `gemini-flash`     | `claude-3-haiku-20240307`  |
 
 You can also specify Claude models directly:
 
@@ -98,7 +101,7 @@ Create or edit `.gemini/settings.json` in your project or home directory:
 When using Claude, the CLI will automatically set the authentication type to `claude-api-key`. Available auth types:
 
 - `claude-api-key`: Use Claude with API key authentication
-- `gemini-api-key`: Use Gemini with API key authentication  
+- `gemini-api-key`: Use Gemini with API key authentication
 - `oauth-personal`: Use Gemini with Google OAuth (Code Assist)
 - `vertex-ai`: Use Gemini via Vertex AI
 

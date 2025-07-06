@@ -89,26 +89,106 @@ export async function main() {
   const workspaceRoot = process.cwd();
   console.log('[DEBUG] MAIN FUNCTION - Workspace root:', workspaceRoot);
   const settings = loadSettings(workspaceRoot);
-  console.log('[DEBUG] MAIN FUNCTION - Settings loaded, selectedAuthType:', settings.merged.selectedAuthType);
+  console.log(
+    '[DEBUG] MAIN FUNCTION - Settings loaded, selectedAuthType:',
+    settings.merged.selectedAuthType,
+  );
 
   // Auto-configure selectedAuthType based on provider and available API keys
   // This must happen BEFORE any React components initialize
+  // Explicit provider overrides existing settings
   const argv = yargs(hideBin(process.argv)).parseSync();
-  const provider = argv.provider || settings.merged.provider || process.env.AI_PROVIDER || 'gemini';
-  
+  const provider =
+    argv.provider ||
+    settings.merged.provider ||
+    process.env.AI_PROVIDER ||
+    'gemini';
+
   console.log('[DEBUG] Early auth config - Provider:', provider);
-  console.log('[DEBUG] Early auth config - Claude API Key present:', !!process.env.CLAUDE_API_KEY);
-  console.log('[DEBUG] Early auth config - Current selectedAuthType:', settings.merged.selectedAuthType);
-  
-  if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
-    console.log('[DEBUG] Setting selectedAuthType to USE_CLAUDE early');
-    settings.setValue(SettingScope.User, 'selectedAuthType', AuthType.USE_CLAUDE);
-  } else if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
-    console.log('[DEBUG] Setting selectedAuthType to USE_GEMINI early');
-    settings.setValue(SettingScope.User, 'selectedAuthType', AuthType.USE_GEMINI);
+  console.log(
+    '[DEBUG] Early auth config - Claude API Key present:',
+    !!process.env.CLAUDE_API_KEY,
+  );
+  console.log(
+    '[DEBUG] Early auth config - Current selectedAuthType:',
+    settings.merged.selectedAuthType,
+  );
+  console.log(
+    '[DEBUG] Early auth config - Explicit provider from CLI:',
+    argv.provider,
+  );
+
+  const hasExistingAuth = settings.merged.selectedAuthType;
+  const isExplicitProviderOverride = !!argv.provider;
+
+  // Override auth type if:
+  // 1. No existing auth type, OR
+  // 2. User explicitly specified a provider via CLI, OR
+  // 3. Existing auth type doesn't match current provider
+  const needsAuthUpdate =
+    !hasExistingAuth ||
+    isExplicitProviderOverride ||
+    (hasExistingAuth &&
+      ((provider === 'claude' &&
+        settings.merged.selectedAuthType !== AuthType.USE_CLAUDE) ||
+        (provider === 'gemini' &&
+          settings.merged.selectedAuthType === AuthType.USE_CLAUDE)));
+
+  if (needsAuthUpdate) {
+    if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
+      console.log(
+        '[DEBUG] Setting selectedAuthType to USE_CLAUDE' +
+          (isExplicitProviderOverride ? ' (explicit override)' : ''),
+      );
+      settings.setValue(
+        SettingScope.User,
+        'selectedAuthType',
+        AuthType.USE_CLAUDE,
+      );
+    } else if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
+      console.log(
+        '[DEBUG] Setting selectedAuthType to USE_GEMINI' +
+          (isExplicitProviderOverride ? ' (explicit override)' : ''),
+      );
+      settings.setValue(
+        SettingScope.User,
+        'selectedAuthType',
+        AuthType.USE_GEMINI,
+      );
+    } else if (provider === 'claude' && !process.env.CLAUDE_API_KEY) {
+      if (isExplicitProviderOverride) {
+        console.error(
+          '[ERROR] You explicitly requested --provider claude but no CLAUDE_API_KEY environment variable is set.',
+        );
+        console.error(
+          'Please set CLAUDE_API_KEY=your_api_key_here or remove the --provider claude flag.',
+        );
+        process.exit(1);
+      } else {
+        console.log(
+          '[DEBUG] Claude requested but no CLAUDE_API_KEY found, keeping existing auth',
+        );
+      }
+    } else if (provider === 'gemini' && !process.env.GEMINI_API_KEY) {
+      // For Gemini, we can fall back to OAuth if no API key is present
+      console.log('[DEBUG] Gemini provider, falling back to OAuth');
+      settings.setValue(
+        SettingScope.User,
+        'selectedAuthType',
+        AuthType.LOGIN_WITH_GOOGLE,
+      );
+    }
+  } else {
+    console.log(
+      '[DEBUG] Respecting existing auth type:',
+      settings.merged.selectedAuthType,
+    );
   }
-  
-  console.log('[DEBUG] Final early selectedAuthType:', settings.merged.selectedAuthType);
+
+  console.log(
+    '[DEBUG] Final early selectedAuthType:',
+    settings.merged.selectedAuthType,
+  );
 
   await cleanupCheckpoints();
   if (settings.errors.length > 0) {
@@ -128,6 +208,7 @@ export async function main() {
 
   // set default fallback to appropriate API key based on provider
   // this has to go after load cli because that's where the env is set
+  // Only set if no auth type is configured
   if (!settings.merged.selectedAuthType) {
     const provider = config.getProvider();
     if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
@@ -145,6 +226,11 @@ export async function main() {
         AuthType.USE_GEMINI,
       );
     }
+  } else {
+    console.log(
+      '[DEBUG] Using existing selectedAuthType:',
+      settings.merged.selectedAuthType,
+    );
   }
 
   setMaxSizedBoxDebugging(config.getDebugMode());
@@ -310,17 +396,21 @@ async function validateNonInterActiveAuth(
   selectedAuthType: AuthType | undefined,
   nonInteractiveConfig: Config,
 ) {
-  // making a special case for the cli. many headless environments might not have a settings.json set
-  // so if GEMINI_API_KEY is set, we'll use that. However since the oauth things are interactive anyway, we'll
-  // still expect that exists
-  if (!selectedAuthType && !process.env.GEMINI_API_KEY) {
-    console.error(
-      `Please set an Auth method in your ${USER_SETTINGS_PATH} OR specify GEMINI_API_KEY env variable file before running`,
-    );
-    process.exit(1);
+  // If no authType is set, determine it from provider and available API keys
+  if (!selectedAuthType) {
+    const provider = nonInteractiveConfig.getProvider();
+    if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
+      selectedAuthType = AuthType.USE_CLAUDE;
+    } else if (process.env.GEMINI_API_KEY) {
+      selectedAuthType = AuthType.USE_GEMINI;
+    } else {
+      console.error(
+        `Please set an Auth method in your ${USER_SETTINGS_PATH} OR specify GEMINI_API_KEY env variable before running`,
+      );
+      process.exit(1);
+    }
   }
 
-  selectedAuthType = selectedAuthType || AuthType.USE_GEMINI;
   const err = validateAuthMethod(selectedAuthType);
   if (err != null) {
     console.error(err);

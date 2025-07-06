@@ -9,7 +9,6 @@ import {
   GenerateContentConfig,
   Part,
   SchemaUnion,
-  PartListUnion,
   Content,
   Tool,
   GenerateContentResponse,
@@ -24,8 +23,7 @@ import {
 import { Config } from '../config/config.js';
 import { getCoreSystemPrompt, getCompressionPrompt } from './prompts.js';
 import { ReadManyFilesTool } from '../tools/read-many-files.js';
-import { getResponseText } from '../utils/generateContentResponseUtilities.js';
-import { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
+import { getResponseText }mport { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
 import { reportError } from '../utils/errorReporting.js';
 import { GeminiChat } from './geminiChat.js';
 import { retryWithBackoff } from '../utils/retry.js';
@@ -48,6 +46,7 @@ function isThinkingSupported(model: string) {
 export class GeminiClient {
   private chat?: GeminiChat;
   private contentGenerator?: ContentGenerator;
+  private claudeHistory: Content[] = []; // Separate history for Claude provider
   private embeddingModel: string;
   private generateContentConfig: GenerateContentConfig = {
     temperature: 0,
@@ -69,7 +68,15 @@ export class GeminiClient {
       contentGeneratorConfig,
       this.config.getSessionId(),
     );
-    this.chat = await this.startChat();
+
+    // Only initialize GeminiChat for Gemini provider
+    // For Claude, we'll handle chat differently to avoid dual API calls
+    if (this.config.getProvider() !== 'claude') {
+      this.chat = await this.startChat();
+    } else {
+      // Initialize Claude history with environment context
+      await this.initializeClaudeHistory();
+    }
   }
 
   getContentGenerator(): ContentGenerator {
@@ -80,26 +87,44 @@ export class GeminiClient {
   }
 
   async addHistory(content: Content) {
-    this.getChat().addHistory(content);
+    if (this.config.getProvider() === 'claude') {
+      this.claudeHistory.push(content);
+    } else {
+      this.getChat().addHistory(content);
+    }
   }
 
   getChat(): GeminiChat {
     if (!this.chat) {
+      if (this.config.getProvider() === 'claude') {
+        throw new Error('GeminiChat not available for Claude provider');
+      }
       throw new Error('Chat not initialized');
     }
     return this.chat;
   }
 
   async getHistory(): Promise<Content[]> {
+    if (this.config.getProvider() === 'claude') {
+      return this.claudeHistory;
+    }
     return this.getChat().getHistory();
   }
 
   async setHistory(history: Content[]): Promise<void> {
-    this.getChat().setHistory(history);
+    if (this.config.getProvider() === 'claude') {
+      this.claudeHistory = [...history];
+    } else {
+      this.getChat().setHistory(history);
+    }
   }
 
   async resetChat(): Promise<void> {
-    this.chat = await this.startChat();
+    if (this.config.getProvider() === 'claude') {
+      this.claudeHistory = [];
+    } else {
+      this.chat = await this.startChat();
+    }
   }
 
   private async getEnvironment(): Promise<Part[]> {
@@ -217,10 +242,15 @@ export class GeminiClient {
   }
 
   async *sendMessageStream(
-    request: PartListUnion,
+    request: Part | string | Array<string | Part>,
     signal: AbortSignal,
     turns: number = this.MAX_TURNS,
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
+    // If using Claude provider, handle it separately to avoid Gemini-specific code paths
+    if (this.config.getProvider() === 'claude') {
+      return yield* this.sendClaudeMessageStream(request, signal);
+    }
+
     // Ensure turns never exceeds MAX_TURNS to prevent infinite loops
     const boundedTurns = Math.min(turns, this.MAX_TURNS);
     if (!boundedTurns) {
@@ -237,19 +267,280 @@ export class GeminiClient {
       yield event;
     }
     if (!turn.pendingToolCalls.length && signal && !signal.aborted) {
-      const nextSpeakerCheck = await checkNextSpeaker(
-        this.getChat(),
-        this,
-        signal,
-      );
-      if (nextSpeakerCheck?.next_speaker === 'model') {
-        const nextRequest = [{ text: 'Please continue.' }];
-        // This recursive call's events will be yielded out, but the final
-        // turn object will be from the top-level call.
-        yield* this.sendMessageStream(nextRequest, signal, boundedTurns - 1);
+      // Skip next speaker check for Claude provider as it requires Gemini-specific generateJson
+      if (this.config.getProvider() === 'gemini') {
+        const nextSpeakerCheck = await checkNextSpeaker(
+          this.getChat(),
+          this,
+          signal,
+        );
+        if (nextSpeakerCheck?.next_speaker === 'model') {
+          const nextRequest = [{ text: 'Please continue.' }];
+          // This recursive call's events will be yielded out, but the final
+          // turn object will be from the top-level call.
+          yield* this.sendMessageStream(nextRequest, signal, boundedTurns - 1);
+        }
       }
     }
     return turn;
+  }
+
+  private async *sendClaudeMessageStream(
+    request: Part | string | Array<string | Part>,
+    signal: AbortSignal,
+  ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
+    try {
+      // For Claude, we need to handle the entire conversation in one stream
+      // because Claude requires tool_use and tool_result to be in consecutive messages
+      let currentContents = await this.getHistory();
+      const userContent = {
+        role: 'user' as const,
+        parts: Array.isArray(request)
+          ? request.map((part) =>
+              typeof part === 'string' ? { text: part } : part,
+            )
+          : [typeof request === 'string' ? { text: request } : request],
+      };
+
+      // Add initial user message to history
+      await this.addHistory(userContent);
+
+      // Continue conversation until no more tool calls are needed
+      let continueConversation = true;
+      let maxTurns = 10; // Prevent infinite loops
+
+      while (continueConversation && maxTurns > 0) {
+        maxTurns--;
+
+        // Get current conversation history
+        currentContents = await this.getHistory();
+
+        // Get tool declarations for Claude
+        const toolRegistry = await this.config.getToolRegistry();
+        const toolDeclarations = toolRegistry.getFunctionDeclarations();
+        const tools: Tool[] = [{ functionDeclarations: toolDeclarations }];
+
+        // Get system instruction for Claude
+        const userMemory = this.config.getUserMemory();
+        const systemInstruction = getCoreSystemPrompt(userMemory);
+
+        const generateRequest = {
+          model: this.config.getModel(),
+          contents: currentContents,
+          generationConfig: this.generateContentConfig,
+          config: {
+            systemInstruction,
+            tools,
+          },
+        };
+
+        const responseStream =
+          await this.getContentGenerator().generateContentStream(
+            generateRequest,
+          );
+
+        let fullResponseText = '';
+        let modelResponse: Content | null = null;
+        const toolCalls: Array<{
+          id: string;
+          name: string;
+          args: Record<string, unknown>;
+        }> = [];
+
+        for await (const response of responseStream) {
+          if (signal?.aborted) {
+            yield { type: GeminiEventType.UserCancelled };
+            return this.createDummyTurn();
+          }
+
+          const text = getResponseText(response);
+          if (text) {
+            fullResponseText += text;
+            yield { type: GeminiEventType.Content, value: text };
+          }
+
+          // Collect function calls but don't execute them yet
+          const functionCalls = response.functionCalls ?? [];
+          for (const fnCall of functionCalls) {
+            const callId =
+              fnCall.id ||
+              `${fnCall.name}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const name = fnCall.name || 'undefined_tool_name';
+            const args = (fnCall.args || {}) as Record<string, unknown>;
+
+            toolCalls.push({ id: callId, name, args });
+
+            yield {
+              type: GeminiEventType.ToolCallRequest,
+              value: {
+                callId,
+                name,
+                args,
+                isClientInitiated: false,
+              },
+            };
+          }
+
+          // Prepare model response for history
+          if (response.candidates?.[0]?.content && !modelResponse) {
+            modelResponse = response.candidates[0].content;
+          }
+        }
+
+        // Add Claude's response to history (including any tool calls)
+        if (fullResponseText || modelResponse || toolCalls.length > 0) {
+          const responseParts: Part[] = [];
+
+          // Add text content if present
+          if (fullResponseText) {
+            responseParts.push({ text: fullResponseText });
+          }
+
+          // Add function calls if present
+          for (const toolCall of toolCalls) {
+            responseParts.push({
+              functionCall: {
+                name: toolCall.name,
+                args: toolCall.args,
+                id: toolCall.id,
+              },
+            });
+          }
+
+          const historyContent: Content = {
+            role: 'model',
+            parts:
+              responseParts.length > 0
+                ? responseParts
+                : [{ text: fullResponseText || 'Assistant response' }],
+          };
+
+          await this.addHistory(historyContent);
+        }
+
+        // If there are tool calls, execute them and prepare the next message
+        if (toolCalls.length > 0) {
+          const toolResponseParts: Part[] = [];
+
+          for (const toolCall of toolCalls) {
+            try {
+              const tool = toolRegistry.getTool(toolCall.name);
+              if (tool) {
+                const result = await tool.execute(toolCall.args, signal);
+
+                // Add tool result part
+                toolResponseParts.push({
+                  functionResponse: {
+                    name: toolCall.name,
+                    response:
+                      typeof result.llmContent === 'string'
+                        ? { result: result.llmContent }
+                        : Array.isArray(result.llmContent) &&
+                            result.llmContent.length > 0
+                          ? {
+                              result: result.llmContent
+                                .map((p) =>
+                                  typeof p === 'string'
+                                    ? p
+                                    : (p as { text: string }).text ||
+                                      JSON.stringify(p),
+                                )
+                                .join('\n'),
+                            }
+                          : { result: 'Tool executed successfully' },
+                    toolUseId: toolCall.id,
+                  } as unknown as {
+                    toolUseId: string;
+                  },
+                });
+
+                yield {
+                  type: GeminiEventType.ToolCallResponse,
+                  value: {
+                    callId: toolCall.id,
+                    responseParts: toolResponseParts,
+                    resultDisplay: result.returnDisplay,
+                    error: undefined,
+                  },
+                };
+              } else {
+                throw new Error(`Tool ${toolCall.name} not found`);
+              }
+            } catch (toolError) {
+              toolResponseParts.push({
+                functionResponse: {
+                  name: toolCall.name,
+                  response: {
+                    error:
+                      toolError instanceof Error
+                        ? toolError.message
+                        : String(toolError),
+                  },
+                  toolUseId: toolCall.id,
+                } as unknown as {
+                  toolUseId: string;
+                },
+              });
+
+              yield {
+                type: GeminiEventType.ToolCallResponse,
+                value: {
+                  callId: toolCall.id,
+                  responseParts: [],
+                  resultDisplay: undefined,
+                  error:
+                    toolError instanceof Error
+                      ? toolError
+                      : new Error(String(toolError)),
+                },
+              };
+            }
+          }
+
+          // Add tool results as a user message and continue the conversation
+          if (toolResponseParts.length > 0) {
+            await this.addHistory({
+              role: 'user',
+              parts: toolResponseParts,
+            });
+            // Continue the conversation to get Claude's response to the tool results
+            continueConversation = true;
+          } else {
+            continueConversation = false;
+          }
+        } else {
+          // No tool calls, conversation is complete
+          continueConversation = false;
+        }
+      }
+
+      // Return a dummy Turn for type compatibility
+      return this.createDummyTurn();
+    } catch (error) {
+      console.error('Error in Claude message stream:', error);
+      yield {
+        type: GeminiEventType.Error,
+        value: {
+          error: {
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+        },
+      };
+      return this.createDummyTurn();
+    }
+  }
+
+  private createDummyTurn(): Turn {
+    // Create a minimal dummy GeminiChat for type compatibility when using Claude
+    const dummyChat = {
+      pendingToolCalls: [],
+      getHistory: () => Promise.resolve([]),
+      async sendMessageStream() {
+        // Empty generator for dummy chat
+      },
+    } as unknown as GeminiChat;
+
+    return new Turn(dummyChat);
   }
 
   async generateJson(
@@ -529,5 +820,42 @@ export class GeminiClient {
     }
 
     return null;
+  }
+
+  private async initializeClaudeHistory(): Promise<void> {
+    // Initialize Claude history with environment context similar to GeminiChat
+    // but avoid re-loading memory since it's already loaded by CLI
+    const cwd = this.config.getWorkingDir();
+    const today = new Date().toLocaleDateString(undefined, {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const platform = process.platform;
+
+    // Use already-loaded memory instead of re-scanning
+    const userMemory = this.config.getUserMemory();
+    const context = `
+This is the Gemini CLI. We are setting up the context for our chat.
+Today's date is ${today}.
+My operating system is: ${platform}
+I'm currently working in the directory: ${cwd}
+
+${userMemory}
+    `.trim();
+
+    const envParts = [{ text: context }];
+
+    this.claudeHistory = [
+      {
+        role: 'user',
+        parts: envParts,
+      },
+      {
+        role: 'model',
+        parts: [{ text: 'Got it. Thanks for the context!' }],
+      },
+    ];
   }
 }

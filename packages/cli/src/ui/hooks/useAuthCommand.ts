@@ -22,16 +22,17 @@ const shouldAutoConfigureAuth = (settings: LoadedSettings): boolean => {
   }
 
   // Check if we have the necessary environment variables for auto-configuration
-  const provider = settings.merged.provider || process.env.AI_PROVIDER || 'gemini';
-  
+  const provider =
+    settings.merged.provider || process.env.AI_PROVIDER || 'gemini';
+
   if (provider === 'claude' && process.env.CLAUDE_API_KEY) {
     return true;
   }
-  
+
   if (provider === 'gemini' && process.env.GEMINI_API_KEY) {
     return true;
   }
-  
+
   return false;
 };
 
@@ -65,7 +66,7 @@ export const useAuthCommand = (
   useEffect(() => {
     const shouldShow = shouldShowAuthDialog(settings);
     setIsAuthDialogOpen(shouldShow);
-  }, [settings.merged.selectedAuthType, settings.merged.provider]);
+  }, [settings, settings.merged.selectedAuthType, settings.merged.provider]);
 
   const openAuthDialog = useCallback(() => {
     setIsAuthDialogOpen(true);

@@ -119,7 +119,7 @@ export async function createContentGenerator(
       'User-Agent': `GeminiCLI/${version} (${process.platform}; ${process.arch})`,
     },
   };
-  
+
   if (config.authType === AuthType.LOGIN_WITH_GOOGLE) {
     return createCodeAssistContentGenerator(
       httpOptions,
@@ -129,7 +129,9 @@ export async function createContentGenerator(
   }
 
   if (config.authType === AuthType.USE_CLAUDE) {
-    const { ClaudeContentGenerator } = await import('../claude/claudeClient.js');
+    const { ClaudeContentGenerator } = await import(
+      '../claude/claudeClient.js'
+    );
     return new ClaudeContentGenerator(config.apiKey!, httpOptions);
   }
 

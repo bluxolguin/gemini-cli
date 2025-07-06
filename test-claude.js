@@ -1,4 +1,10 @@
-#!/usr/bin/env node
+/**
+ * @license
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* globals console, process */
 
 // Test script para verificar que la integración de Claude funciona
 import { ClaudeContentGenerator } from './packages/core/dist/src/claude/claudeClient.js';
@@ -15,14 +21,16 @@ async function testClaude() {
   const claude = new ClaudeContentGenerator(apiKey);
 
   const request = {
-    contents: [{
-      role: 'user',
-      parts: [{ text: '¿Cuál es la capital de España?' }]
-    }],
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: '¿Cuál es la capital de España?' }],
+      },
+    ],
     config: {
       maxOutputTokens: 100,
-      temperature: 0.7
-    }
+      temperature: 0.7,
+    },
   };
 
   try {

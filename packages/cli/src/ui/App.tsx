@@ -165,8 +165,9 @@ const App = ({ config, settings, startupWarnings = [] }: AppProps) => {
         setAuthError(error);
         // Only open auth dialog if this isn't an auto-configured Claude setup
         // that just needs the API key to be set
-        const isClaudeWithMissingKey = settings.merged.selectedAuthType === AuthType.USE_CLAUDE && 
-                                      error.includes('CLAUDE_API_KEY');
+        const isClaudeWithMissingKey =
+          settings.merged.selectedAuthType === AuthType.USE_CLAUDE &&
+          error.includes('CLAUDE_API_KEY');
         if (!isClaudeWithMissingKey) {
           openAuthDialog();
         }

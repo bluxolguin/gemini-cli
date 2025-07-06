@@ -238,14 +238,22 @@ export class Config {
   async initializeContentGenerator() {
     if (!this.contentGeneratorConfig) {
       const authType = this.getAuthTypeForProvider();
-      console.log('[DEBUG] Config: Initializing content generator with authType:', authType, 'provider:', this.provider);
+      console.log(
+        '[DEBUG] Config: Initializing content generator with authType:',
+        authType,
+        'provider:',
+        this.provider,
+      );
       if (authType) {
         const contentConfig = await createContentGeneratorConfig(
           this.model,
           authType,
           { getModel: () => this.getModel() },
         );
-        console.log('[DEBUG] Config: Created content config:', JSON.stringify(contentConfig, null, 2));
+        console.log(
+          '[DEBUG] Config: Created content config:',
+          JSON.stringify(contentConfig, null, 2),
+        );
         this.contentGeneratorConfig = contentConfig;
       }
     }
@@ -292,21 +300,16 @@ export class Config {
         return AuthType.LOGIN_WITH_GOOGLE;
       }
     }
-    
+
     // Direct check for provider-specific API keys
     if (this.provider === 'claude' && process.env.CLAUDE_API_KEY) {
       return AuthType.USE_CLAUDE;
     } else if (this.provider === 'gemini' && process.env.GEMINI_API_KEY) {
       return AuthType.USE_GEMINI;
     }
-    
-    // Fallback to provider-based logic
-    if (this.provider === 'claude') {
-      return AuthType.USE_CLAUDE;
-    } else if (this.provider === 'gemini') {
-      return AuthType.USE_GEMINI;
-    }
-    return undefined;
+
+    // Default behavior - prefer OAuth for Gemini if no specific API key configuration
+    return AuthType.LOGIN_WITH_GOOGLE;
   }
 
   getSessionId(): string {

@@ -35,6 +35,7 @@ import {
   ApiResponseEvent,
 } from '../telemetry/types.js';
 import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
+import { apiLogger } from '../utils/apiLogger.js';
 
 /**
  * Returns true if the response is valid, false otherwise.
@@ -153,6 +154,38 @@ export class GeminiChat {
     model: string,
   ): Promise<void> {
     const requestText = this._getRequestTextFromContents(contents);
+
+    apiLogger.logGeminiRequest({
+      model,
+      contentCount: contents.length,
+      contents: contents.map((content) => ({
+        role: content.role,
+        parts: content.parts?.map((part) => {
+          if ('text' in part && part.text) {
+            return {
+              type: 'text',
+              text:
+                part.text.substring(0, 200) +
+                (part.text.length > 200 ? '...' : ''),
+            };
+          } else if ('functionCall' in part && part.functionCall) {
+            return {
+              type: 'functionCall',
+              name: part.functionCall.name,
+              args: part.functionCall.args,
+            };
+          } else if ('functionResponse' in part && part.functionResponse) {
+            return {
+              type: 'functionResponse',
+              name: part.functionResponse.name,
+            };
+          }
+          return part;
+        }),
+      })),
+      generationConfig: this.generationConfig,
+    });
+
     logApiRequest(this.config, new ApiRequestEvent(model, requestText));
   }
 
@@ -161,6 +194,17 @@ export class GeminiChat {
     usageMetadata?: GenerateContentResponseUsageMetadata,
     responseText?: string,
   ): Promise<void> {
+    // Enhanced console logging for Gemini response
+    apiLogger.logGeminiResponse({
+      model: this.config.getModel(),
+      durationMs,
+      usage: usageMetadata,
+      responseText: responseText
+        ? responseText.substring(0, 500) +
+          (responseText.length > 500 ? '...' : '')
+        : undefined,
+    });
+
     logApiResponse(
       this.config,
       new ApiResponseEvent(
@@ -175,6 +219,15 @@ export class GeminiChat {
   private _logApiError(durationMs: number, error: unknown): void {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorType = error instanceof Error ? error.name : 'unknown';
+
+    // Enhanced console logging for Gemini errors
+    apiLogger.logGeminiError({
+      model: this.config.getModel(),
+      durationMs,
+      errorType,
+      errorMessage,
+      stack: error instanceof Error ? error.stack : undefined,
+    });
 
     logApiError(
       this.config,
@@ -274,6 +327,35 @@ export class GeminiChat {
           await this.handleFlashFallback(authType),
         authType: this.config.getContentGeneratorConfig()?.authType,
       });
+
+      // Log the immediate response structure
+      apiLogger.logGeminiResponse({
+        model: this.config.getModel(),
+        candidates: response.candidates?.map((candidate) => ({
+          role: candidate.content?.role,
+          parts: candidate.content?.parts?.map((part) => {
+            if ('text' in part && part.text) {
+              return {
+                type: 'text',
+                text:
+                  part.text.substring(0, 200) +
+                  (part.text.length > 200 ? '...' : ''),
+              };
+            } else if ('functionCall' in part && part.functionCall) {
+              return {
+                type: 'functionCall',
+                name: part.functionCall.name,
+                args: part.functionCall.args,
+              };
+            }
+            return part;
+          }),
+          finishReason: candidate.finishReason,
+          index: candidate.index,
+        })),
+        usageMetadata: response.usageMetadata,
+      });
+
       const durationMs = Date.now() - startTime;
       await this._logApiResponse(
         durationMs,
@@ -342,6 +424,15 @@ export class GeminiChat {
     await this.sendPromise;
     const userContent = createUserContent(params.message);
     const requestContents = this.getHistory(true).concat(userContent);
+
+    // TEMPORARY: Disable Gemini logging to debug dual provider issue
+    // apiLogger.logGeminiStreamRequest({
+    //   model: this.config.getModel(),
+    //   messageType: typeof params.message,
+    //   contentCount: requestContents.length,
+    //   generationConfig: { ...this.generationConfig, ...params.config }
+    // });
+
     this._logApiRequest(requestContents, this.config.getModel());
 
     const startTime = Date.now();
@@ -463,9 +554,35 @@ export class GeminiChat {
     const outputContent: Content[] = [];
     const chunks: GenerateContentResponse[] = [];
     let errorOccurred = false;
+    let chunkCount = 0;
 
     try {
       for await (const chunk of streamResponse) {
+        chunkCount++;
+
+        // Log stream chunks
+        apiLogger.logGeminiStreamChunk(chunkCount, {
+          valid: isValidResponse(chunk),
+          candidates: chunk.candidates?.map((candidate) => ({
+            role: candidate.content?.role,
+            parts: candidate.content?.parts?.map((part) => {
+              if ('text' in part && part.text) {
+                return {
+                  type: 'text',
+                  text:
+                    part.text.substring(0, 100) +
+                    (part.text.length > 100 ? '...' : ''),
+                };
+              } else if ('functionCall' in part && part.functionCall) {
+                return { type: 'functionCall', name: part.functionCall.name };
+              }
+              return part;
+            }),
+            finishReason: candidate.finishReason,
+          })),
+          usageMetadata: chunk.usageMetadata,
+        });
+
         if (isValidResponse(chunk)) {
           chunks.push(chunk);
           const content = chunk.candidates?.[0]?.content;
@@ -482,9 +599,15 @@ export class GeminiChat {
     } catch (error) {
       errorOccurred = true;
       const durationMs = Date.now() - startTime;
+      apiLogger.logGeminiError({
+        message: `Stream error after ${chunkCount} chunks`,
+        error,
+      });
       this._logApiError(durationMs, error);
       throw error;
     }
+
+    apiLogger.logGeminiStreamComplete(chunkCount);
 
     if (!errorOccurred) {
       const durationMs = Date.now() - startTime;
